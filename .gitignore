@@ -1,0 +1,8 @@
+.DS_STORE
+input.csv
+output.csv
+myenv
+run.sh
+credentials.json
+token.json
+.~lock*
