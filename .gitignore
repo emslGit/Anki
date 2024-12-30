@@ -4,5 +4,6 @@ output.csv
 myenv
 run.sh
 credentials.json
+*normalized.csv
 token.json
 .~lock*
