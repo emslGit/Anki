@@ -70,6 +70,12 @@ def generate_link(word_es, tag):
     else:
         return 'No link'
 
+def capitalize_first_alphanumeric(sentence):
+    for i, char in enumerate(sentence):
+        if char.isalnum():
+            return sentence[:i] + char.upper() + sentence[i+1:]
+    return sentence
+
 def generate_examples(word_es, word, tags):
     response = client.chat.completions.create(
         model='gpt-4o-mini',
@@ -94,7 +100,7 @@ def generate_examples(word_es, word, tags):
     word_en, word_sv, example_es, example_en, comment = content.split('|')
 
     return {
-        'Spanish': word_es,
+        'Spanish': capitalize_first_alphanumeric(word_es),
         'English': re.sub(r'["\']+', '', word_en).strip().capitalize(),
         'Swedish': re.sub(r'["\']+', '', word_sv).strip().capitalize(),
         'Example ES': re.sub(r'["\']+', '', example_es).strip(),
@@ -130,7 +136,7 @@ def process_csv(output_file):
             df_out.at[index, 'Report'] = 'Spanish required'
             continue
 
-        word_es = row['Spanish'].capitalize()
+        word_es = capitalize_first_alphanumeric(row['Spanish'])
             
         if pd.isna(row['Tags']):
             df_out.at[index, 'Report'] = f'{word_es}: Tags required'
