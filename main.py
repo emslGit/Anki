@@ -11,10 +11,10 @@ import os.path
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-SAMPLE_RANGE_NAME = "input!A2:D"
-SPREADSHEET_ID="YOUR_ID"
+SAMPLE_RANGE_NAME = "input!A2:F"
+SPREADSHEET_ID="1wEjJpBgwV5LJdWpDxzeC_3u2rUVt3QQQGZXbJNMJSNs"
 MAX_COUNT = 99999
-ACCEPTED_TAGS = ['Adjective', 'Adverb', 'Pronoun', 'Preposition', 'Conjunction/subjunction', 'Interjection', 'Phrase', 'Noun', 'Verb']
+ACCEPTED_WORD_CLASSES = ['Adjective', 'Adverb', 'Pronoun', 'Preposition', 'Conjunction/subjunction', 'Interjection', 'Phrase', 'Noun', 'Verb']
 
 client = OpenAI()
 
@@ -52,7 +52,7 @@ def fetch_data():
             print("No data found.")
             return
 
-        columns=['Spanish', 'English', 'Swedish', 'Tag']
+        columns=['Spanish', 'English', 'Swedish', 'Class', 'Eman', 'Sixten']
         df_in = pd.DataFrame(values, columns=columns).iloc[:MAX_COUNT]
         print(df_in)
         return df_in
@@ -65,21 +65,21 @@ def capitalize_first_alphanumeric(sentence):
             return sentence[:i] + char.upper() + sentence[i+1:]
     return sentence
 
-def generate_examples(word_es, word, tag):
-    tag = tag.capitalize()
+def generate_examples(word_es, word, word_class):
+    word_class = word_class.capitalize()
     response = client.chat.completions.create(
         model='gpt-4o-mini',
         messages=[
             {'role': 'system', 'content': 'You complete missing CSV fields.'},
-            {'role': 'system', 'content': f'Use the {tag} \'{word_es}\' ({word}) in a simple Spanish (castellano) sentence.'},
-            {'role': 'system', 'content': f'Translate {word_es} to both <english> and <swedish>.' + (
-                ' Use definite article adding \'the\' if missing.' if tag == 'Noun' else
-                ' Use infinitive form adding \'att\' and \'to\' if missing.' if tag == 'Verb' else 
-                f' Also classify {word_es} as one of: \'Adjective\', \'Adverb\', \'Pronoun\', \'Preposition\', \'Conjunction/subjunction\', \'Interjection\'. If none fits leave it as \'Phrase\'. <tag> must be exactly one word (or two in the case of \'Conjunction/subjunction\').' if tag == 'Phrase' else
+            {'role': 'user', 'content': f'Use the {word_class} \'{word_es}\' ({word}) in a simple Spanish (castellano) sentence.'},
+            {'role': 'user', 'content': f'Translate {word_es} to both <english> and <swedish>.' + (
+                ' Use definite article adding \'the\' if missing.' if word_class == 'Noun' else
+                ' Use infinitive form adding \'att\' and \'to\' if missing.' if word_class == 'Verb' else 
+                f' Also classify {word_es} as one of: \'Adjective\', \'Adverb\', \'Pronoun\', \'Preposition\', \'Conjunction/subjunction\', \'Interjection\'. If none fits leave it as \'Phrase\'. <word_class> must be exactly one word (or two in the case of \'Conjunction/subjunction\').' if word_class == 'Phrase' else
                 ''
             )},
-            {'role': 'system', 'content': f'Provide a simple <sentence_in_spanish>, the <sentence_in_english> using \'{word_es}\', and a very brief english <comment> on usage of \'{word_es}\'. Avoid semicolons. Using only the \' symbol for quotes if they are necessary.'},
-            {'role': 'system', 'content': 'It is highly important to stick to the format:<english>|<swedish>|<tag>|<sentence_in_spanish>|<sentence_in_english>|<comment>'}
+            {'role': 'user', 'content': f'Provide a simple <sentence_in_spanish>, the <sentence_in_english> using \'{word_es}\', and a very brief english <comment> on usage of \'{word_es}\'. Avoid semicolons. Using only the \' symbol for quotes if they are necessary.'},
+            {'role': 'user', 'content': 'It is highly important to stick to the format:<english>|<swedish>|<word_class>|<sentence_in_spanish>|<sentence_in_english>|<comment>'}
         ]
     )
 
@@ -87,30 +87,30 @@ def generate_examples(word_es, word, tag):
     content = response.choices[0].message.content
 
     # Initialize variables
-    is_noun_or_verb = tag != 'Noun' or tag != 'Verb'
-    _tag = ''
+    is_noun_or_verb = word_class != 'Noun' or word_class != 'Verb'
+    _word_class = ''
     example_es = ''
     example_en = ''
     comment = ''
 
     # Split the content by lines and extract the relevant parts
-    word_en, word_sv, _tag, example_es, example_en, comment = content.split('|')
+    word_en, word_sv, _word_class, example_es, example_en, comment = content.split('|')
 
-    tag = tag if is_noun_or_verb else _tag
-    tag = re.sub(r'["\']+', '', tag).strip().capitalize()
-    tag = tag if tag in ACCEPTED_TAGS else 'Phrase'
+    word_class = word_class if is_noun_or_verb else _word_class
+    word_class = re.sub(r'["\']+', '', word_class).strip().capitalize()
+    word_class = word_class if word_class in ACCEPTED_WORD_CLASSES else 'Phrase'
 
     return {
         'Spanish': capitalize_first_alphanumeric(word_es),
         'English': re.sub(r'["\']+', '', word_en).strip().capitalize(),
         'Swedish': re.sub(r'["\']+', '', word_sv).strip().capitalize(),
-        'Tag': tag,
+        'Class': word_class,
         'Example ES': re.sub(r'["\']+', '', example_es).strip(),
         'Example EN': re.sub(r'["\']+', '', example_en).strip(),
         'Comment': re.sub(r'["\']+', '', comment).strip(),
     }
 
-def generate_tags(output_file):
+def generate_word_classes(output_file):
     df_out = pd.read_csv(output_file, delimiter=';')
     count_added = 0
     batch_size = 20
@@ -118,7 +118,7 @@ def generate_tags(output_file):
     offset = 0
 
     for index, row in df_out.iterrows():
-        if row['Tag'] == 'Phrase' and offset <= index:         
+        if row['Class'] == 'Phrase' and offset <= index:         
             word_es = row['Spanish']
             word_en = row['English']
             word_se = row['Swedish']
@@ -131,10 +131,10 @@ def generate_tags(output_file):
                 ]
             )
 
-            tag = 'Phrase' if response.choices[0].message.content not in ACCEPTED_TAGS else response.choices[0].message.content
-            df_out.at[index, 'Tag'] = tag
+            word_class = 'Phrase' if response.choices[0].message.content not in ACCEPTED_WORD_CLASSES else response.choices[0].message.content
+            df_out.at[index, 'Class'] = word_class
             count_added += 1
-            print(f"{index}, Tag for {row['Spanish']} is {tag}")
+            print(f"{index}, Class for {row['Spanish']} is {word_class}")
         if (count_added + 1) % batch_size == 0:
             df_out.to_csv('output.csv', index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
             print(f'{index}: saving batch {batch_number}, modified {count_added}.')
@@ -155,11 +155,24 @@ def process_csv(output_file):
     else:
         df_in_lower = df_in.copy()
         df_out_lower = df_out.copy()
+        print(df_in_lower)
         df_in_lower['Spanish'] = df_in['Spanish'].str.lower()
         df_out_lower['Spanish'] = df_out['Spanish'].str.lower()
         diff_rows = df_in[~df_in_lower['Spanish'].isin(df_out_lower['Spanish'])].copy()
-        df_out = pd.concat([df_out, diff_rows], ignore_index=True).drop_duplicates(subset=['Spanish'], keep='first')
-        df_out['Tag'] = df_out['Spanish'].map(df_in.set_index('Spanish')['Tag']).fillna(df_out['Tag'])
+
+        # Replace "x" with the column name, keep empty otherwise
+        df_in['Eman'] = df_in['Eman'].apply(lambda x: 'Eman' if x == 'x' else '')
+        df_in['Sixten'] = df_in['Sixten'].apply(lambda x: 'Sixten' if x == 'x' else '')
+
+        # Merge new rows and drop "Eman" and "Sixten" columns
+        df_out = pd.concat([df_out, diff_rows], ignore_index=True).drop_duplicates(subset=['Spanish'], keep='first').drop(columns=['Eman', 'Sixten'], errors='ignore')
+
+        # Map Tags correctly from df_in
+        df_out['Tags_Tmp'] = ''
+        df_out['Tags_Tmp'] = df_out['Spanish'].map(
+            df_in.set_index('Spanish')[['Eman', 'Sixten']]
+            .apply(lambda x: ' '.join(x[x != '']).strip(), axis=1)
+        ).fillna(df_out['Tags_Tmp'])
 
     for index, row in df_out.iterrows():
         if index < offset:
@@ -172,16 +185,16 @@ def process_csv(output_file):
             continue
 
         word_es = capitalize_first_alphanumeric(row['Spanish'])            
-        tag = row['Tag'] if not pd.isna(row['Tag']) else 'Phrase'
-        
+        word_class = row['Class'] if not pd.isna(row['Class']) else 'Phrase'
+    
         word_en = None
         word_sv = None
         
-        # if is_new and not pd.isna(row['Spanish']) and tag == 'Noun' and len(row['Spanish'].split(" ")) < 2:
+        # if is_new and not pd.isna(row['Spanish']) and word_class == 'Noun' and len(row['Spanish'].split(" ")) < 2:
         #     df_out.at[index, 'Error'] = f'{word_es}: Noun must have article'
         #     continue
     
-        # if not pd.isna(row['Spanish']) and tag == 'Verb' and (len(row['English'].split(" ")) < 2 or len(row['Swedish'].split(" ")) < 2):
+        # if not pd.isna(row['Spanish']) and word_class == 'Verb' and (len(row['English'].split(" ")) < 2 or len(row['Swedish'].split(" ")) < 2):
         #     df_out.at[index, 'Error'] = f'{word_es}: Verb must be in infinitive form'
         #     continue
 
@@ -192,30 +205,35 @@ def process_csv(output_file):
         else:
             df_out.at[index, 'Error'] = f'{word_es}: Swedish OR English required'
             continue
-
+    
         if is_new:
-            examples = generate_examples(word_es, word_en if word_en else word_sv, tag)
+            examples = generate_examples(word_es, word_en if word_en else word_sv, word_class)
+            word_class = examples['Class']
 
-            print(f"{examples['Spanish']} - {examples['Tag']} - {examples['Example ES']} - {examples['Example EN']}")
-
+            print(f"{examples['Spanish']} - {examples['Class']} - {examples['Example ES']} - {examples['Example EN']}")
+            
             is_original_en = word_en is not None and len(word_en)
             is_original_sv = word_sv is not None and len(word_sv)
 
             df_out.at[index, 'Spanish'] = word_es
             df_out.at[index, 'English'] = f"{word_en if is_original_en else examples['English']}" + (' \u2713' if is_original_en else '')
             df_out.at[index, 'Swedish'] = f"{word_sv if is_original_sv else examples['Swedish']}" + (' \u2713' if is_original_sv else '')
-            df_out.at[index, 'Tag'] = tag
+            df_out.at[index, 'Class'] = examples['Class']
             df_out.at[index, 'Example ES'] = examples['Example ES']
             df_out.at[index, 'Example EN'] = examples['Example EN']
             df_out.at[index, 'Comment'] = examples['Comment']
-
             count_added += 1
+            
+        df_out.at[index, 'Tags'] = ' '.join(
+            filter(None, [str(row['Tags_Tmp']) if pd.notna(row['Tags_Tmp']) else '', str(word_class).strip()])
+        ).strip()
 
         if (count_added + 1) % batch_size == 0:
             df_out.to_csv(output_file, index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
             print(f'{batch_number}-{index}: added {count_added} rows, out of a total of {len(df_out)}.')
             batch_number += 1
 
+    df_out.drop(columns=['Tags_Tmp'], inplace=True)
     df_out.to_csv(output_file, index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
     print(f'Completed {count_added} rows out of a total of {len(df_out)}.')
 
@@ -245,4 +263,4 @@ if __name__ == '__main__':
     # output = normalize_csv('output.csv', 'output_normalized.csv', read_delimiter=';', write_delimiter=';', usecols=['Spanish'])
     # default = normalize_csv('Default.txt', 'default_normalized.csv', read_delimiter='\t', write_delimiter=';', skip_rows=2)
     # compare_dfs(output, default)
-    # generate_tags('output.csv')
+    # generate_word_classes('output.csv')
