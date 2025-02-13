@@ -1,4 +1,6 @@
 .DS_STORE
+Default.txt
+*.bak.*
 input.csv
 output.csv
 myenv
