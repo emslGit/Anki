@@ -10,20 +10,23 @@ import re
 import os.path
 
 # If modifying these scopes, delete the file token.json.
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-SAMPLE_RANGE_NAME = "input!A2:F"
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SAMPLE_RANGE_INPUT_NAME = "input"
+SAMPLE_RANGE_OUTPUT_NAME = "output"
 SPREADSHEET_ID=""
 MAX_COUNT = 99999
 ACCEPTED_WORD_CLASSES = ['Adjective', 'Adverb', 'Pronoun', 'Preposition', 'Conjunction/subjunction', 'Interjection', 'Phrase', 'Noun', 'Verb']
 ACCEPTED_FREQUENCIES = ['Everyday', 'Common', 'Rare', 'Archaic', 'Regional', 'Incorrect']
+OUTPUT_FILE = 'output.csv'
 
 client = OpenAI()
+creds = None
 
-def fetch_data():
-    creds = None
+def get_creds():
     # The file token.json stores the user's access and refresh tokens, and is
     # created automatically when the authorization flow completes for the first
     # time.
+    global creds
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
     # If there are no (valid) credentials available, let the user log in.
@@ -37,14 +40,34 @@ def fetch_data():
         with open("token.json", "w") as token:
             token.write(creds.to_json())
 
+    return creds
+
+def post_data(df):
+    print(df)
+    service = build("sheets", "v4", credentials=get_creds())
+    
+    data = [df.columns.tolist()] + df.fillna("").values.tolist()
+
+    # Write to the 'output' tab starting at cell A1
+    body = {"values": data}
+    result = service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f'{SAMPLE_RANGE_OUTPUT_NAME}!A1:H',
+        valueInputOption="RAW",
+        body=body
+    ).execute()
+
+    print(f"{result.get('updatedCells')} cells updated.")
+
+def fetch_data(range, columns):
     try:
-        service = build("sheets", "v4", credentials=creds)
+        service = build("sheets", "v4", credentials=get_creds())
 
         # Call the Sheets API
         sheet = service.spreadsheets()
         result = (
             sheet.values()
-            .get(spreadsheetId=SPREADSHEET_ID, range=SAMPLE_RANGE_NAME)
+            .get(spreadsheetId=SPREADSHEET_ID, range=range)
             .execute()
         )
         values = result.get("values", [])
@@ -53,10 +76,9 @@ def fetch_data():
             print("No data found.")
             return
 
-        columns=['Spanish', 'English', 'Swedish', 'Class', 'Eman', 'Sixten']
-        df_in = pd.DataFrame(values, columns=columns).iloc[:MAX_COUNT]
-        print(df_in)
-        return df_in
+        df = pd.DataFrame(values, columns=columns).iloc[:MAX_COUNT]
+        print(df)
+        return df
     except HttpError as err:
         print(err)
 
@@ -233,9 +255,16 @@ def generate_word_classes(output_file):
     df_out.to_csv('output.csv', index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
     print(f'Completed {count_added} rows out of a total of {len(df_out)}.')
 
-def process_csv(output_file):
-    df_in = fetch_data()
-    df_out = pd.read_csv(output_file, delimiter=';', index_col=False)
+def process_csv():
+    df_in = fetch_data(
+        range=f'{SAMPLE_RANGE_INPUT_NAME}!A2:F', 
+        columns=['Spanish', 'English', 'Swedish', 'Class', 'Eman', 'Sixten']
+    )
+    df_out = fetch_data(
+        range=f'{SAMPLE_RANGE_OUTPUT_NAME}!A2:H', 
+        columns=['Spanish', 'English', 'Swedish', 'Class', 'Example ES', 'Example EN', 'Comment', 'Tags']
+    )
+    output_file = OUTPUT_FILE
     batch_size = 10
     batch_number = 0
     offset = 0
@@ -257,7 +286,7 @@ def process_csv(output_file):
 
         # Merge new rows and drop "Eman" and "Sixten" columns
         df_out = pd.concat([df_out, diff_rows], ignore_index=True).drop_duplicates(subset=['Spanish'], keep='first').drop(columns=['Eman', 'Sixten'], errors='ignore')
-        
+
         # Map Tags correctly from df_in
         df_out['Tags_Tmp'] = ''
         df_out['Tags_Tmp'] = df_out['Spanish'].map(
@@ -282,8 +311,8 @@ def process_csv(output_file):
             df_out.at[index, 'Error'] = 'Spanish required'
             continue
 
-        word_es = row['Spanish']
-        word_class = row['Class'] if not pd.isna(row['Class']) else 'Phrase'
+        word_es = capitalize_first_alphanumeric(row['Spanish'])
+        word_class = capitalize_first_alphanumeric(row['Class']) if not pd.isna(row['Class']) else 'Phrase'
         
         frequency = ''
         word_en = None
@@ -298,9 +327,9 @@ def process_csv(output_file):
         #     continue
 
         if not pd.isna(row['English']) and len(row['English']):
-            word_en = row['English'].capitalize().replace('_', ' ')
+            word_en = capitalize_first_alphanumeric(row['English'].capitalize().replace('_', ' '))
         elif not pd.isna(row['Swedish'] and len(row['Swedish'])):
-            word_sv = row['Swedish'].capitalize().replace('_', ' ')
+            word_sv = capitalize_first_alphanumeric(row['Swedish'].capitalize().replace('_', ' '))
         else:
             df_out.at[index, 'Error'] = f'{word_es}: Swedish OR English required'
             continue
@@ -325,17 +354,19 @@ def process_csv(output_file):
             count_added += 1
         
         unique_tags = list(set(tags + tags_tmp + [word_class, frequency]))
-        unique_tags.remove('')
+        if ('' in unique_tags):
+            unique_tags.remove('')
         unique_tags.sort()
         df_out.at[index, 'Tags'] = ' '.join(filter(None, unique_tags)).strip()
 
         if (count_added + 1) % batch_size == 0:
             df_out.to_csv(output_file, index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
-            print(f'{batch_number}-{index}: added {count_added} rows, out of a total of {len(df_out)}.')
+            print(f'Batch {batch_number}, Index {index}: added {count_added} rows, out of a total of {len(df_out)}.')
             batch_number += 1
 
     df_out.drop(columns=['Tags_Tmp'], inplace=True)
     df_out.to_csv(output_file, index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
+    post_data(df_out)
     print(f'Completed {count_added} rows out of a total of {len(df_out)}.')
 
 def normalize_csv(input_file, output_file, read_delimiter=';', usecols=[0], write_delimiter=';', skip_rows=0):
@@ -359,7 +390,7 @@ def compare_dfs(df_1, df_2):
         print(f"-{word}")
 
 if __name__ == '__main__':
-    process_csv('output.csv')
+    process_csv()
     # input = normalize_csv('input.csv', 'input_normalized.csv', read_delimiter=';', write_delimiter=';')
     # output = normalize_csv('output.csv', 'output_normalized.csv', read_delimiter=';', write_delimiter=';', usecols=['Spanish'])
     # default = normalize_csv('Default.txt', 'default_normalized.csv', read_delimiter='\t', write_delimiter=';', skip_rows=2)
