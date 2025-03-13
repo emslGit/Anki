@@ -5,6 +5,7 @@ input.csv
 output.csv
 myenv
 run.sh
+run.bat
 credentials.json
 *normalized.csv
 token.json
