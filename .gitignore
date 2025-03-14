@@ -3,6 +3,8 @@ Default.txt
 *.bak.*
 input.csv
 output.csv
+output.*.csv
+output_translated.csv
 myenv
 run.sh
 run.bat

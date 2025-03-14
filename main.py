@@ -4,6 +4,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from openai import OpenAI
+import numpy as np
 import csv
 import pandas as pd
 import re
@@ -92,23 +93,53 @@ def capitalize_first_alphanumeric(sentence):
 def translate_output(target_language):
 	df = fetch_data(['Spanish', 'English', 'Swedish', 'Class', 'Example ES', 'Example EN', 'Comment', 'Skip'], "output!A2:H")
 	df = df[df['Skip'] != 'Yes']
-	df.drop(columns=['Swedish', 'Comment', 'Skip'], inplace=True)
 	df.reset_index(drop=True, inplace=True)
 
+	batch_size = 10
+	offset = 0
+
 	for index, row in df.iterrows():
+		if index < offset:
+			continue
+
 		word_es = row['Spanish']
 		word_en = row['English']
+		word_sv = row['Swedish']
 		word_class = row['Class']
 		example_es = row['Example ES']
 		example_en = row['Example EN']
 		
+		is_original_en = word_en.endswith('\u2713')
+
 		response = client.chat.completions.create(
 			model='gpt-4o-mini',
 			messages=[
-				{'role': 'system', 'content': f'You translate words and phrases from spanish to {target_language}'},
-				{'role': 'user', 'content': f'1. Translate the \'{word_es}\', which is a \'{word_class}\' meaning \'{word_en}\' in english, into {target_language}.'},
-				{'role': 'user', 'content': f'2. Then translate the acompanying example sentence \'{example_es}\' meaning \'{example_en}\' into {target_language}.'},
-				{'role': 'user', 'content': 'It is highly important to **stick to the following format**:<word_translated>|<example_translated>'}
+				{
+					"role": "system",
+					"content": "You complete missing CSV fields. Follow the output format exactly."
+				},
+				{
+					"role": "user",
+					"content": (
+						f"You are given the Spanish word '{word_es}', which is a {word_class} meaning {f'{word_en} in English' if is_original_en else {f'{word_sv} in Swedish'}}."
+						f"You are also given the sentence '{example_es}' in Spanish, which means '{example_en}' in English."
+						"please do the following:"
+					)
+				},
+				{
+					"role": "user",
+					"content": (
+						f"1. Translate that word directly into {target_language}.\n"
+						f"2. Translate the sentence into {target_language}, preserving its original spanish meaning."
+					)
+				},
+				{
+					"role": "user",
+					"content": (
+						"Please output the response in exactly the following format without any extra text:\n\n"
+						f"<word_in_{target_language}>|<sentence_in_{target_language}>"
+					)
+				}
 			]
 		)
 
@@ -117,7 +148,7 @@ def translate_output(target_language):
 		content_split = content.split('|')
 
 		if len(content_split) != 2:
-			print('Error:', content_split)
+			print('Error:', content)
 
 		word_translated, example_translated = content_split
 
@@ -125,7 +156,10 @@ def translate_output(target_language):
 		df.at[index, f'Example T'] = capitalize_first_alphanumeric(example_translated)
 		df.at[index, f'Tags'] = word_class
 
-	df.drop(columns=['English', 'Example EN', 'Class'], inplace=True)
+		if (index + 1) % batch_size == 0 or index == len(df) - 1:
+			df.to_csv('output_translated.csv', index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
+			print(f'{index + 1} rows translated out of a total of {len(df)}.')
+
 	df = df[['Spanish', 'Translated', 'Example ES', 'Example T', 'Tags']]
 
 	post_data(df, f'output_translated!A2:E')
@@ -142,7 +176,7 @@ def generate_examples(word_es, word, word_class):
 			{
 				"role": "user",
 				"content": (
-					f"Given the Spanish word '{word_es}', which is a {word_class} meaning '{word}' in English, "
+					f"Given the Spanish word '{word_es}', which is a {word_class} meaning '{word}', "
 					"please do the following:"
 				)
 			},
@@ -174,7 +208,7 @@ def generate_examples(word_es, word, word_class):
 				"role": "user",
 				"content": (
 					"Please output the response in exactly the following format without any extra text:\n\n"
-					"<english>|<swedish>|<word_class>|<sentence_in_spanish>|<sentence_in_english>|<comment>"
+					"<word_in_english>|<word_in_swedish>|<word_class>|<sentence_in_spanish>|<sentence_in_english>|<comment>"
 				)
 			}
 		]
@@ -218,61 +252,63 @@ def process_table():
 	batch_number = 0
 	offset = 0
 	count_added = 0
+	count = 0
 
-	df_in_lower = df_in.copy()
-	df_out_lower = df_out.copy()
-	df_in_lower['Spanish'] = df_in['Spanish'].str.lower()
-	df_out_lower['Spanish'] = df_out['Spanish'].str.lower()
+	df_in['Skip'] = df_in['Skip'].apply(lambda row: 'Yes' if row == 'x' else 'No')
+	df_in['Spanish'] = df_in['Spanish'].apply(str.lower)
+	df_out['Spanish'] = df_out['Spanish'].apply(str.lower)
+	new_rows = df_in[~df_in['Spanish'].isin(df_out['Spanish'])].copy()
+	df_out = pd.concat([df_out, new_rows], ignore_index=True).drop_duplicates(subset=['Spanish'], keep='first')
+	df_out = df_out.drop(columns=['Skip'], errors='ignore')
+	df_out = df_out.merge(df_in[['Spanish', 'Skip', 'English', 'Swedish']], on='Spanish', how='left')
+	df_out = df_out.replace({np.nan: None})
 
-	diff_rows = df_in[~df_in_lower['Spanish'].isin(df_out_lower['Spanish'])].copy()
-	diff_rows['Skip'] = diff_rows['Skip'].apply(lambda row: 'No' if pd.isna(row) else 'Yes')
-	diff_rows['Original EN'] = diff_rows['English'].apply(capitalize_first_alphanumeric)
-	diff_rows['Original SV'] = diff_rows['Swedish'].apply(capitalize_first_alphanumeric)
+	try:
+		for index, row in df_out.iterrows():
+			if index < offset:
+				continue
 
-	df_out['Spanish'] = df_in['Spanish'].apply(capitalize_first_alphanumeric)
-	df_out['Skip'] = df_in['Skip'].apply(lambda row: 'No' if pd.isna(row) else 'Yes')
-	df_out['Original EN'] = df_in['English'].apply(capitalize_first_alphanumeric)
-	df_out['Original SV'] = df_in['Swedish'].apply(capitalize_first_alphanumeric)
-	df_out = pd.concat([df_out, diff_rows], ignore_index=True).drop_duplicates(subset=['Spanish'], keep='first')
+			is_new = pd.isna(row.get('Example ES'))
+			is_original_en = not pd.isna(row['English_y']) and len(row['English_y'])
 
-	for index, row in df_out.iterrows():
-		if index < offset:
-			continue
+			word_es = capitalize_first_alphanumeric(row['Spanish'])
+			word_class = row['Class'] if not pd.isna(row['Class']) else 'Phrase'
+			word_en = row['English_y'] if is_original_en else row['English_x']
+			word_sv = row['Swedish_x'] if is_original_en else row['Swedish_y']
 
-		is_new = pd.isna(row.get('Example ES'))
-		is_original_en = not pd.isna(row['Original EN']) and len(row['Original EN'])
+			if is_new:
+				examples = generate_examples(word_es, word_en if is_original_en else word_sv, word_class)
 
-		word_es = row['Spanish']
-		word_class = row['Class'] if not pd.isna(row['Class']) else 'Phrase'
-		word_en = (row['Original EN'] + ' \u2713') if is_original_en else row['English']
-		word_sv = (row['Original SV'] + ' \u2713') if not is_original_en else row['Swedish']
+				word_en = f"{word_en if is_original_en else examples['English']}"
+				word_sv = f"{word_sv if not is_original_en else examples['Swedish']}"
+				word_class = examples['Class']
+				df_out.at[index, 'Example ES'] = examples['Example ES']
+				df_out.at[index, 'Example EN'] = examples['Example EN']
+				df_out.at[index, 'Comment'] = examples['Comment']
+				count_added += 1
+			
+			df_out.at[index, 'English'] = capitalize_first_alphanumeric(word_en) + (' \u2713' if is_original_en else '')
+			df_out.at[index, 'Swedish'] = capitalize_first_alphanumeric(word_sv) + ('' if is_original_en else ' \u2713')
+			df_out.at[index, 'Tags'] = word_class
+			df_out.at[index, 'Spanish'] = word_es
 
-		if is_new:
-			examples = generate_examples(word_es, word_en if word_en else word_sv, word_class)
+			if (count_added + 1) % batch_size == 0 or index == len(df_out) - 1:
+				print(df_out[['Spanish', 'Example ES', 'Example EN']])
+				df_out.to_csv(f'output.csv', index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)	
+				print(f'{batch_number}-{index}: added {count_added} rows, out of a total of {len(df_out)}.')
+				batch_number += 1
+			
+			count += 1
 
-			# print(f"{examples['Spanish']} - {examples['English']} - {examples['Class']} - {examples['Example ES']} - {examples['Example EN']}")
-
-			word_en = f"{word_en if is_original_en else examples['English']}"
-			word_sv = f"{word_sv if not is_original_en else examples['Swedish']}"
-			word_class = examples['Class']
-			df_out.at[index, 'Example ES'] = examples['Example ES']
-			df_out.at[index, 'Example EN'] = examples['Example EN']
-			df_out.at[index, 'Comment'] = examples['Comment']
-			count_added += 1
-		
-		df_out.at[index, 'English'] = word_en
-		df_out.at[index, 'Swedish'] = word_sv
-		df_out.at[index, 'Tags'] = word_class
-		df_out.at[index, 'Spanish'] = word_es
-
-		if (count_added + 1) % batch_size == 0 or index == len(df_out) - 1:
-			df_out.to_csv('output.csv', index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)	
-			print(f'{batch_number}-{index}: added {count_added} rows, out of a total of {len(df_out)}.')
-			batch_number += 1
-
-	df_out.drop(columns=['Original EN', 'Original SV'], inplace=True)	
-	print(f'Completed {count_added} rows out of a total of {len(df_out)}.')
-	return df_out
+		print(f'Completed {count} adding {count_added} rows out of a total of {len(df_out)}.')
+		df_out = df_out[['Spanish', 'English', 'Swedish', 'Class', 'Example ES', 'Example EN', 'Comment', 'Skip', 'Tags']]
+		df_out.to_csv(f'output.csv', index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
+		return df_out
+	except Exception as e:
+		print(f'Interrupted at row {count} out of a total of {len(df_out)}.')
+		df_out = df_out[['Spanish', 'English', 'Swedish', 'Class', 'Example ES', 'Example EN', 'Comment', 'Skip', 'Tags']]
+		df_out.to_csv(f'output.{count}.csv', index=False, sep=';', quotechar='"', quoting=csv.QUOTE_ALL)
+		raise e
 
 def normalize_df(df, output_file, write_delimiter=';', skip_rows=0):
 	df[df.columns[0]] = df[df.columns[0]].str.lower()
@@ -316,9 +352,10 @@ def get_duplicates(df):
 	return df[dup_mask]
 
 if __name__ == '__main__':
+	pass
 	# post_data(process_table(), 'output!A2:I')
-	translate_output('Mandarin')
+	# translate_output('Mandarin')
 	# input = normalize_df(fetch_data(['Spanish'], "input!A2:A"), 'input_normalized.csv', write_delimiter=';')
 	# output = normalize_df(fetch_data(['Spanish'], "output!A2:A"), 'output_normalized.csv', write_delimiter=';')
 	# default = normalize_file('Default.txt', 'default_normalized.csv', read_delimiter='\t', write_delimiter=';', skip_rows=2)
-	# compare_dfs(input, output)
+	# compare_dfs(output, default)
