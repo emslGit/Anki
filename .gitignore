@@ -5,7 +5,7 @@ input.csv
 output.csv
 output.*.csv
 output_translated.csv
-myenv
+myvenv
 run.sh
 run.bat
 credentials.json
